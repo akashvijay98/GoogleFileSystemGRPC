@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+package com.gfs.grpc;
+
+service MasterService{
+  rpc GetUploadLocation(FileRequest) returns (ChunkLocationResponse);
+  rpc GetDownloadLocations(ChunkRequest) returns (ChunkLocationList);
+}
+
+service ChunkService {
+  rpc UploadChunk(stream ChunkData) returns (UploadStatus);
+  rpc DownloadChunk(ChunkRequest) returns (stream ChunkData);
+}
+
+message ChunkData{
+  string chunkId = 1;
+  bytes data = 2;
+}
+message ChunkLocationResponse{
+  string chunkId =1;
+  string serverAddress=2;
+}
+
+message ChunkLocationList{
+  repeated ChunkLocationResponse chunks = 1;
+}
+
+message ChunkRequest{
+  string chunkId = 1;
+}
+
+message FileRequest{
+  string fileName =1;
+}
+
+message UploadStatus {bool success = 1; }
