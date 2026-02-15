@@ -4,6 +4,7 @@ import com.gfs.grpc.ChunkData;
 import com.gfs.grpc.ChunkServiceGrpc;
 import com.gfs.grpc.UploadStatus;
 import io.grpc.stub.StreamObserver;
+import net.devh.boot.grpc.server.service.GrpcService;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -12,6 +13,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.stream.Stream;
 
+@GrpcService
 public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
 
     private final Path storageDir = Paths.get("data/chunks");
@@ -36,8 +38,9 @@ public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
             public void onCompleted() {
                 try {
                     if (!Files.exists(storageDir)) {
-                        Files.write(storageDir.resolve(chunkId), buffer.toByteArray());
+                        Files.createDirectories(storageDir);
                     }
+                    Files.write(storageDir.resolve(chunkId), buffer.toByteArray());
 
 
                     responseObserver.onNext(UploadStatus.newBuilder().setSuccess(true).build());

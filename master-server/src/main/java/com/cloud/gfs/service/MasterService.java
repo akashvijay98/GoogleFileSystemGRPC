@@ -7,6 +7,7 @@ import com.gfs.grpc.ChunkLocationResponse;
 import com.gfs.grpc.FileRequest;
 import com.gfs.grpc.MasterServiceGrpc;
 import io.grpc.stub.StreamObserver;
+import net.devh.boot.grpc.server.service.GrpcService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -14,8 +15,11 @@ import java.util.List;
 import java.util.Random;
 import java.util.UUID;
 
+import net.devh.boot.grpc.server.service.GrpcService;
+
+@GrpcService
 public class MasterService  extends MasterServiceGrpc.MasterServiceImplBase {
-    private final List<String> chunkServers = List.of("localhost:9001", "localhost:9002", "localhost:9003");
+    private final List<String> chunkServers = List.of("chunk-server-1:8082", "chunk-server-2:8082", "chunk-server-3:8082");
     @Autowired
     private FileRepository fileRepository;
 

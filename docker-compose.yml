@@ -1,0 +1,74 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      POSTGRES_DB: gfs_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d gfs_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  master-server:
+    build:
+      context: .
+      dockerfile: master-server/Dockerfile
+    container_name: master-server
+    ports:
+      - "8081:8081"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/gfs_db
+      DB_USERNAME: user
+      DB_PASSWORD: password
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  chunk-server-1:
+    build:
+      context: .
+      dockerfile: chunk-server/Dockerfile
+    container_name: chunk-server-1
+    ports:
+      - "9001:8082"
+    depends_on:
+      - master-server
+
+  chunk-server-2:
+    build:
+      context: .
+      dockerfile: chunk-server/Dockerfile
+    container_name: chunk-server-2
+    ports:
+      - "9002:8082"
+    depends_on:
+      - master-server
+
+  chunk-server-3:
+    build:
+      context: .
+      dockerfile: chunk-server/Dockerfile
+    container_name: chunk-server-3
+    ports:
+      - "9003:8082"
+    depends_on:
+      - master-server
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    container_name: client
+    ports:
+      - "8080:8080"
+    depends_on:
+      - master-server
+      - chunk-server-1
+      - chunk-server-2
+      - chunk-server-3
