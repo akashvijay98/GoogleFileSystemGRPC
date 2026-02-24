@@ -6,6 +6,8 @@ package com.gfs.grpc;
 service MasterService{
   rpc GetUploadLocation(FileRequest) returns (ChunkLocationResponse);
   rpc GetDownloadLocations(ChunkRequest) returns (ChunkLocationList);
+  rpc GetFileChunks(FileRequest) returns (ChunkLocationList);
+  rpc ListFiles(Empty) returns (FileList);
 }
 
 service ChunkService {
@@ -35,3 +37,9 @@ message FileRequest{
 }
 
 message UploadStatus {bool success = 1; }
+
+message FileList {
+  repeated string fileNames = 1;
+}
+
+message Empty {}

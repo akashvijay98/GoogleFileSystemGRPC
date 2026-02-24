@@ -1,16 +1,19 @@
 package com.cloud.gfs.model;
 
 import jakarta.persistence.CascadeType;
+import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @Getter
 @Setter
+@Entity
 public class FileMetadata {
     @Id
     @GeneratedValue
@@ -18,5 +21,5 @@ public class FileMetadata {
     private String fileName;
 
     @OneToMany(cascade = CascadeType.ALL)
-    private List<ChunkRecord> chunks;
+    private List<ChunkRecord> chunks = new ArrayList<>();
 }

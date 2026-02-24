@@ -1,8 +1,10 @@
 package service;
 
 import com.gfs.grpc.ChunkData;
+import com.gfs.grpc.ChunkRequest;
 import com.gfs.grpc.ChunkServiceGrpc;
 import com.gfs.grpc.UploadStatus;
+import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import net.devh.boot.grpc.server.service.GrpcService;
 
@@ -78,5 +80,35 @@ public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
             }
 
         };
+    }
+
+    public void downloadChunk(ChunkRequest request, StreamObserver<ChunkData> responseObserver){
+        String chunkId = request.getChunkId();
+        Path chunkPath = storageDir.resolve(chunkId);
+
+        if(!Files.exists(chunkPath)){
+            responseObserver.onError(Status.NOT_FOUND.withDescription("Chunk"+chunkId+"not found").asRuntimeException());
+            return;
+        }
+
+        try(java.io.InputStream inputStream = Files.newInputStream(chunkPath)){
+            byte[] buffer = new byte[64*1024];
+            int bytesRead;
+
+            while((bytesRead = inputStream.read(buffer))!=-1){
+                ChunkData chunkData = ChunkData.newBuilder()
+                        .setChunkId(chunkId)
+                        .setData(com.google.protobuf.ByteString.copyFrom(buffer,0,bytesRead))
+                        .build();
+
+                responseObserver.onNext(chunkData);
+            }
+            responseObserver.onCompleted();
+        } catch (IOException e) {
+            System.err.println("Read failed for chunk " + chunkId + ": " + e.getMessage());
+            responseObserver.onError(io.grpc.Status.INTERNAL
+                    .withDescription("Error reading chunk from disk")
+                    .asRuntimeException());
+        }
     }
 }
