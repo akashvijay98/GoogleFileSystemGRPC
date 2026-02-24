@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'client'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['client:8080']
+
+  - job_name: 'master-server'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['master-server:8080']
+
+  - job_name: 'chunk-servers'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['chunk-server-1:8080', 'chunk-server-2:8080', 'chunk-server-3:8080']
