@@ -8,11 +8,20 @@ service MasterService{
   rpc GetDownloadLocations(ChunkRequest) returns (ChunkLocationList);
   rpc GetFileChunks(FileRequest) returns (ChunkLocationList);
   rpc ListFiles(Empty) returns (FileList);
+  rpc SendHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 service ChunkService {
   rpc UploadChunk(stream ChunkData) returns (UploadStatus);
   rpc DownloadChunk(ChunkRequest) returns (stream ChunkData);
+}
+
+message HeartbeatRequest {
+  string serverAddress = 1;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
 }
 
 message ChunkData{
