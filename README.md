@@ -2,19 +2,6 @@
 
 A distributed file system built with gRPC for communication between clients, master server, and chunk servers.
 
-## Architecture
-
-```
-┌──────────┐      ┌─────────────┐      ┌───────────────┐
-│  Client  │─────▶│ Master      │◀─────│ Chunk Server 1│
-│          │      │ (Metadata)  │      └───────────────┘
-└──────────┘      └─────────────┘      ┌───────────────┐
-                                       │ Chunk Server 2│
-                                       └───────────────┘
-                                              ┌───────────────┐
-                                              │ Chunk Server 3│
-                                              └───────────────┘
-```
 
 ## Components
 
