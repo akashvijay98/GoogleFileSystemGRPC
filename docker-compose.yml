@@ -35,30 +35,36 @@ services:
       context: .
       dockerfile: chunk-server/Dockerfile
     container_name: chunk-server-1
+    environment:
+      - HOSTNAME=chunk-server-1
     ports:
       - "9001:8082"
     depends_on:
       - master-server
 
   chunk-server-2:
-    build:
-      context: .
-      dockerfile: chunk-server/Dockerfile
-    container_name: chunk-server-2
-    ports:
-      - "9002:8082"
-    depends_on:
-      - master-server
+      build:
+        context: .
+        dockerfile: chunk-server/Dockerfile
+      container_name: chunk-server-2
+      environment:
+        - HOSTNAME=chunk-server-2
+      ports:
+        - "9002:8082"
+      depends_on:
+        - master-server
 
   chunk-server-3:
-    build:
-      context: .
-      dockerfile: chunk-server/Dockerfile
-    container_name: chunk-server-3
-    ports:
-      - "9003:8082"
-    depends_on:
-      - master-server
+      build:
+        context: .
+        dockerfile: chunk-server/Dockerfile
+      container_name: chunk-server-3
+      environment:
+        - HOSTNAME=chunk-server-3
+      ports:
+        - "9003:8082"
+      depends_on:
+        - master-server
 
   client:
     build:

@@ -1,11 +1,11 @@
 package com.cloud.gfs.controller;
 
 import java.io.*;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import com.gfs.grpc.*;
 import com.google.protobuf.ByteString;
@@ -25,17 +25,23 @@ public class FileService {
     private final MasterServiceGrpc.MasterServiceBlockingStub masterStub;
     // Cache channels so we don't recreate them for every chunk
     private final Map<String, ManagedChannel> channelCache = new ConcurrentHashMap<>();
-
+    private ExecutorService uploadExecutor = Executors.newFixedThreadPool(8);
     @Autowired
     public FileService(MasterServiceGrpc.MasterServiceBlockingStub masterStub) {
         this.masterStub = masterStub;
     }
 
     public void uploadFile(File file) {
+        List<CompletableFuture> futures = new ArrayList<>();
         try (InputStream is = new FileInputStream(file)) {
             byte[] buffer = new byte[1024 * 1024]; // 1MB chunk size
             int bytesRead;
+            int chunkIndex = 0;
+
             while ((bytesRead = is.read(buffer)) != -1) {
+
+                final byte[] chunkData = Arrays.copyOf(buffer, bytesRead);
+                final int index = chunkIndex++;
                 ChunkLocationResponse loc = masterStub.getUploadLocation(FileRequest.newBuilder()
                         .setFileName(file.getName())
                         .build());
@@ -43,52 +49,74 @@ public class FileService {
                 String addr = loc.getServerAddress();
                 String cid = loc.getChunkId();
 
-                ManagedChannel channel = channelCache.computeIfAbsent(addr,
-                        k -> ManagedChannelBuilder.forTarget(k).usePlaintext().build());
+                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                    uploadChunk(addr, cid, chunkData, index);
+                }, uploadExecutor);
 
-                ChunkServiceGrpc.ChunkServiceStub chunkStub = ChunkServiceGrpc.newStub(channel);
-                CompletableFuture<Boolean> future = new CompletableFuture<>();
-
-                StreamObserver<ChunkData> requestObserver = chunkStub.uploadChunk(new StreamObserver<>() {
-                    private UploadStatus status;
-
-                    @Override
-                    public void onNext(UploadStatus v) {
-                        this.status = v;
-                    }
-
-                    @Override
-                    public void onError(Throwable t) {
-                        future.completeExceptionally(t);
-                    }
-
-                    @Override
-                    public void onCompleted() {
-                        if (status != null && status.getSuccess()) {
-                            future.complete(true);
-                        } else {
-                            future.completeExceptionally(new RuntimeException("Upload failed for chunk " + cid));
-                        }
-                    }
-                });
-
-                requestObserver.onNext(ChunkData.newBuilder()
-                        .setChunkId(cid)
-                        .setData(ByteString.copyFrom(buffer, 0, bytesRead))
-                        .build());
-                requestObserver.onCompleted();
-
-                future.get(); // Wait for this chunk to be acknowledged
-                System.out.println("Uploaded chunk " + cid);
+                futures.add(future);
             }
+
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            System.out.println("All " + chunkIndex + " chunks uploaded successfully.");
+
         } catch (Exception e) {
-            throw new RuntimeException("File upload failed", e);
+            futures.forEach(f -> f.cancel(true));
+            throw new RuntimeException(("file upload failed"), e);
         }
     }
+
+    private void uploadChunk(String addr, String cid, byte[] data, int index){
+
+            ManagedChannel channel = channelCache.computeIfAbsent(addr,
+                    k -> ManagedChannelBuilder.forTarget(k).usePlaintext().build());
+
+            ChunkServiceGrpc.ChunkServiceStub chunkStub = ChunkServiceGrpc.newStub(channel);
+            CompletableFuture<Boolean> ackFuture = new CompletableFuture<>();
+
+            StreamObserver<ChunkData> requestObserver = chunkStub.uploadChunk(new StreamObserver<>() {
+                private UploadStatus status;
+
+                @Override
+                public void onNext(UploadStatus v) {
+                    this.status = v;
+                }
+
+                @Override
+                public void onError(Throwable t) {
+                    ackFuture.completeExceptionally(t);
+                }
+
+                @Override
+                public void onCompleted() {
+                    if (status != null && status.getSuccess()) {
+                        ackFuture.complete(true);
+                    } else {
+                        ackFuture.completeExceptionally(new RuntimeException("Upload failed for chunk " + cid));
+                    }
+                }
+            });
+
+            requestObserver.onNext(ChunkData.newBuilder()
+                    .setChunkId(cid)
+                    .setData(ByteString.copyFrom(data))
+                    .build());
+            requestObserver.onCompleted();
+
+            try {
+
+                ackFuture.get(); // Wait for this chunk to be acknowledged
+                System.out.println("Uploaded chunk " + cid);
+            }
+            catch(Exception e) {
+                throw new RuntimeException("Upload chunk failed for chunk" + cid, e);
+            }
+    }
+
 
     // Call this when the app closes
     @PreDestroy
     private void shutdown() {
+        uploadExecutor.shutdown();
         channelCache.values().forEach(ManagedChannel::shutdown);
     }
 

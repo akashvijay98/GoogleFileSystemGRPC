@@ -7,8 +7,8 @@
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
         <module name="client" />
-        <module name="master-server" />
         <module name="chunk-server" />
+        <module name="master-server" />
       </profile>
     </annotationProcessing>
   </component>

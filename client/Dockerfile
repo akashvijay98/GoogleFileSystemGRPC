@@ -2,6 +2,7 @@
 
 # Build stage
 FROM maven:3.9.6-eclipse-temurin-21 AS build
+
 WORKDIR /app
 
 # Copy all pom files first to leverage Docker cache
@@ -24,6 +25,7 @@ RUN mvn -pl client -am clean package
 # Package stage
 FROM eclipse-temurin:21-jdk-alpine
 WORKDIR /app
-COPY --from=build /app/client/target/*.jar app.jar
+COPY --from=build /app/client/target/client-1.0-SNAPSHOT-exec.jar app.jar
+
 EXPOSE 8080
 ENTRYPOINT ["java","-jar","app.jar"]
