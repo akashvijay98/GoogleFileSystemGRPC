@@ -26,9 +26,10 @@ A distributed file system built with gRPC for communication between clients, mas
 ## Quick Start
 
 ### Option 1: Using Docker Compose (Recommended)
-
+from project root, type:
 ```bash
-# Start all services with PostgreSQL
+ mvn clean package -DskipTests
+then 
 docker compose up -d
 ```
 
@@ -36,8 +37,6 @@ docker compose up -d
 
 **1. Start PostgreSQL:**
 ```bash
-from project root, tpye: mvn clean package -DskipTests
-then 
 docker run -d \
   --name postgres-gfs \
   -e POSTGRES_DB=gfs \
