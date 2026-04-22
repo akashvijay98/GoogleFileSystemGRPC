@@ -12,7 +12,7 @@ service MasterService{
 }
 
 service ChunkService {
-  rpc UploadChunk(stream ChunkData) returns (UploadStatus);
+  rpc WriteChunk(WriteChunkRequest) returns (WriteChunkResponse);
   rpc DownloadChunk(ChunkRequest) returns (stream ChunkData);
 }
 
@@ -30,7 +30,9 @@ message ChunkData{
 }
 message ChunkLocationResponse{
   string chunkId =1;
-  string serverAddress=2;
+  string primaryServerAddress = 2;
+  repeated string replicaServerAddresses = 3;
+  int64 leaseExpirationEpochMillis = 4;
 }
 
 message ChunkLocationList{
@@ -46,6 +48,17 @@ message FileRequest{
 }
 
 message UploadStatus {bool success = 1; }
+
+message WriteChunkRequest {
+  string chunkId = 1;
+  bytes data = 2;
+  repeated string secondaryReplicas = 3;
+  bool replicatedWrite = 4;
+}
+
+message WriteChunkResponse {
+  bool success = 1;
+}
 
 message FileList {
   repeated string fileNames = 1;

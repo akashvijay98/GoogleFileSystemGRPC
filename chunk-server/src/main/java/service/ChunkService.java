@@ -3,112 +3,106 @@ package service;
 import com.gfs.grpc.ChunkData;
 import com.gfs.grpc.ChunkRequest;
 import com.gfs.grpc.ChunkServiceGrpc;
-import com.gfs.grpc.UploadStatus;
+import com.gfs.grpc.WriteChunkRequest;
+import com.gfs.grpc.WriteChunkResponse;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import net.devh.boot.grpc.server.service.GrpcService;
 
-import java.io.ByteArrayOutputStream;
+import javax.annotation.PreDestroy;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.stream.Stream;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @GrpcService
 public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
 
     private final Path storageDir = Paths.get("data/chunks");
-
+    private final Map<String, ManagedChannel> channelCache = new ConcurrentHashMap<>();
 
     @Override
-    public StreamObserver<ChunkData> uploadChunk(StreamObserver<UploadStatus> responseObserver){
-        return new StreamObserver<ChunkData>() {
-            private String chunkId;
-            private ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    public void writeChunk(WriteChunkRequest request, StreamObserver<WriteChunkResponse> responseObserver) {
+        try {
+            persistChunk(request.getChunkId(), request.getData().toByteArray());
 
-            @Override
-            public void onNext(ChunkData chunkData) {
-
-                if (chunkId == null) {
-                    chunkId = chunkData.getChunkId();
-                }
-
-                buffer.writeBytes(chunkData.getData().toByteArray());
-            }
-            @Override
-            public void onCompleted() {
-                try {
-                    if (!Files.exists(storageDir)) {
-                        Files.createDirectories(storageDir);
-                    }
-                    Files.write(storageDir.resolve(chunkId), buffer.toByteArray());
-
-
-                    responseObserver.onNext(UploadStatus.newBuilder().setSuccess(true).build());
-                    responseObserver.onCompleted();
-                }
-                catch (IOException e) {
-
-                    System.err.println("Disk write failed: " + e.getMessage());
-                    responseObserver.onError(io.grpc.Status.INTERNAL
-                            .withDescription("Could not write chunk to disk")
-                            .asRuntimeException());
-                }
-
-                finally {
-                    try {
-                        buffer.close();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                }
+            if (!request.getReplicatedWrite()) {
+                replicateToSecondaries(request);
             }
 
-            @Override
-            public void onError(Throwable t) {
-                // Log the error so you know why the upload failed
-                System.err.println("Upload failed for chunk " + chunkId + ": " + t.getMessage());
-
-                // Clean up resources
-                try {
-                    buffer.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-
-            }
-
-        };
+            responseObserver.onNext(WriteChunkResponse.newBuilder()
+                    .setSuccess(true)
+                    .build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                    .withDescription("Failed to write chunk " + request.getChunkId() + ": " + e.getMessage())
+                    .asRuntimeException());
+        }
     }
 
-    public void downloadChunk(ChunkRequest request, StreamObserver<ChunkData> responseObserver){
+    @Override
+    public void downloadChunk(ChunkRequest request, StreamObserver<ChunkData> responseObserver) {
         String chunkId = request.getChunkId();
         Path chunkPath = storageDir.resolve(chunkId);
 
-        if(!Files.exists(chunkPath)){
-            responseObserver.onError(Status.NOT_FOUND.withDescription("Chunk"+chunkId+"not found").asRuntimeException());
+        if (!Files.exists(chunkPath)) {
+            responseObserver.onError(Status.NOT_FOUND
+                    .withDescription("Chunk " + chunkId + " not found")
+                    .asRuntimeException());
             return;
         }
 
-        try(java.io.InputStream inputStream = Files.newInputStream(chunkPath)){
-            byte[] buffer = new byte[64*1024];
+        try (InputStream inputStream = Files.newInputStream(chunkPath)) {
+            byte[] buffer = new byte[64 * 1024];
             int bytesRead;
 
-            while((bytesRead = inputStream.read(buffer))!=-1){
-                ChunkData chunkData = ChunkData.newBuilder()
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                responseObserver.onNext(ChunkData.newBuilder()
                         .setChunkId(chunkId)
-                        .setData(com.google.protobuf.ByteString.copyFrom(buffer,0,bytesRead))
-                        .build();
-
-                responseObserver.onNext(chunkData);
+                        .setData(com.google.protobuf.ByteString.copyFrom(buffer, 0, bytesRead))
+                        .build());
             }
             responseObserver.onCompleted();
         } catch (IOException e) {
-            System.err.println("Read failed for chunk " + chunkId + ": " + e.getMessage());
-            responseObserver.onError(io.grpc.Status.INTERNAL
+            responseObserver.onError(Status.INTERNAL
                     .withDescription("Error reading chunk from disk")
                     .asRuntimeException());
+        }
+    }
+
+    @PreDestroy
+    void shutdown() {
+        channelCache.values().forEach(ManagedChannel::shutdown);
+    }
+
+    private void persistChunk(String chunkId, byte[] data) throws IOException {
+        if (!Files.exists(storageDir)) {
+            Files.createDirectories(storageDir);
+        }
+        Files.write(storageDir.resolve(chunkId), data);
+    }
+
+    private void replicateToSecondaries(WriteChunkRequest request) {
+        for (String secondary : request.getSecondaryReplicasList()) {
+            ManagedChannel channel = channelCache.computeIfAbsent(secondary,
+                    key -> ManagedChannelBuilder.forTarget(key).usePlaintext().build());
+
+            WriteChunkResponse response = ChunkServiceGrpc.newBlockingStub(channel)
+                    .writeChunk(WriteChunkRequest.newBuilder()
+                            .setChunkId(request.getChunkId())
+                            .setData(request.getData())
+                            .setReplicatedWrite(true)
+                            .build());
+
+            if (!response.getSuccess()) {
+                throw new IllegalStateException("Replica write rejected by " + secondary);
+            }
         }
     }
 }

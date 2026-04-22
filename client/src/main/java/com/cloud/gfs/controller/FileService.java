@@ -1,38 +1,43 @@
 package com.cloud.gfs.controller;
 
-import java.io.*;
-import java.util.*;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
+import java.util.stream.Collectors;
 
 import com.gfs.grpc.*;
-import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
-import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
-
 import org.springframework.stereotype.Service;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import javax.annotation.PreDestroy;
 
 @Service
 public class FileService {
     private final MasterServiceGrpc.MasterServiceBlockingStub masterStub;
-    // Cache channels so we don't recreate them for every chunk
-    private final Map<String, ManagedChannel> channelCache = new ConcurrentHashMap<>();
-    private ExecutorService uploadExecutor = Executors.newFixedThreadPool(8);
+    private final ConcurrentHashMap<String, ManagedChannel> channelCache = new ConcurrentHashMap<>();
+    private final ExecutorService uploadExecutor = Executors.newFixedThreadPool(8);
+
     @Autowired
     public FileService(MasterServiceGrpc.MasterServiceBlockingStub masterStub) {
         this.masterStub = masterStub;
     }
 
     public void uploadFile(File file) {
-        List<CompletableFuture> futures = new ArrayList<>();
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
         try (InputStream is = new FileInputStream(file)) {
             byte[] buffer = new byte[1024 * 1024]; // 1MB chunk size
             int bytesRead;
@@ -46,11 +51,14 @@ public class FileService {
                         .setFileName(file.getName())
                         .build());
 
-                String addr = loc.getServerAddress();
-                String cid = loc.getChunkId();
+                String primary = loc.getPrimaryServerAddress();
+                String chunkId = loc.getChunkId();
+                List<String> secondaries = loc.getReplicaServerAddressesList().stream()
+                        .filter(server -> !server.equals(primary))
+                        .collect(Collectors.toList());
 
                 CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                    uploadChunk(addr, cid, chunkData, index);
+                    uploadChunk(primary, chunkId, secondaries, chunkData, index);
                 }, uploadExecutor);
 
                 futures.add(future);
@@ -65,55 +73,26 @@ public class FileService {
         }
     }
 
-    private void uploadChunk(String addr, String cid, byte[] data, int index){
+    private void uploadChunk(String primary, String chunkId, List<String> secondaries, byte[] data, int index) {
+        ManagedChannel channel = channelCache.computeIfAbsent(primary,
+                key -> ManagedChannelBuilder.forTarget(key).usePlaintext().build());
 
-            ManagedChannel channel = channelCache.computeIfAbsent(addr,
-                    k -> ManagedChannelBuilder.forTarget(k).usePlaintext().build());
+        WriteChunkResponse response = ChunkServiceGrpc.newBlockingStub(channel)
+                .writeChunk(WriteChunkRequest.newBuilder()
+                        .setChunkId(chunkId)
+                        .setData(com.google.protobuf.ByteString.copyFrom(data))
+                        .addAllSecondaryReplicas(secondaries)
+                        .setReplicatedWrite(false)
+                        .build());
 
-            ChunkServiceGrpc.ChunkServiceStub chunkStub = ChunkServiceGrpc.newStub(channel);
-            CompletableFuture<Boolean> ackFuture = new CompletableFuture<>();
+        if (!response.getSuccess()) {
+            throw new RuntimeException("Primary write failed for chunk " + chunkId + " at index " + index);
+        }
 
-            StreamObserver<ChunkData> requestObserver = chunkStub.uploadChunk(new StreamObserver<>() {
-                private UploadStatus status;
-
-                @Override
-                public void onNext(UploadStatus v) {
-                    this.status = v;
-                }
-
-                @Override
-                public void onError(Throwable t) {
-                    ackFuture.completeExceptionally(t);
-                }
-
-                @Override
-                public void onCompleted() {
-                    if (status != null && status.getSuccess()) {
-                        ackFuture.complete(true);
-                    } else {
-                        ackFuture.completeExceptionally(new RuntimeException("Upload failed for chunk " + cid));
-                    }
-                }
-            });
-
-            requestObserver.onNext(ChunkData.newBuilder()
-                    .setChunkId(cid)
-                    .setData(ByteString.copyFrom(data))
-                    .build());
-            requestObserver.onCompleted();
-
-            try {
-
-                ackFuture.get(); // Wait for this chunk to be acknowledged
-                System.out.println("Uploaded chunk " + cid);
-            }
-            catch(Exception e) {
-                throw new RuntimeException("Upload chunk failed for chunk" + cid, e);
-            }
+        System.out.println("Uploaded chunk " + chunkId + " via primary " + primary);
     }
 
 
-    // Call this when the app closes
     @PreDestroy
     private void shutdown() {
         uploadExecutor.shutdown();
@@ -129,47 +108,69 @@ public class FileService {
             File downloadedFile = new File(System.getProperty("java.io.tmpdir") + "/downloaded_" + fileName);
             try (FileOutputStream fos = new FileOutputStream(downloadedFile)) {
                 for (ChunkLocationResponse loc : locations.getChunksList()) {
-                    String addr = loc.getServerAddress();
-                    String cid = loc.getChunkId();
-
-                    ManagedChannel channel = channelCache.computeIfAbsent(addr,
-                            k -> ManagedChannelBuilder.forTarget(k).usePlaintext().build());
-
-                    ChunkServiceGrpc.ChunkServiceStub chunkStub = ChunkServiceGrpc.newStub(channel);
-                    CompletableFuture<byte[]> chunkDataFuture = new CompletableFuture<>();
-                    ByteArrayOutputStream chunkBuffer = new ByteArrayOutputStream();
-
-                    chunkStub.downloadChunk(ChunkRequest.newBuilder().setChunkId(cid).build(),
-                            new StreamObserver<ChunkData>() {
-                                @Override
-                                public void onNext(ChunkData value) {
-                                    try {
-                                        chunkBuffer.write(value.getData().toByteArray());
-                                    } catch (IOException e) {
-                                        chunkDataFuture.completeExceptionally(e);
-                                    }
-                                }
-
-                                @Override
-                                public void onError(Throwable t) {
-                                    chunkDataFuture.completeExceptionally(t);
-                                }
-
-                                @Override
-                                public void onCompleted() {
-                                    chunkDataFuture.complete(chunkBuffer.toByteArray());
-                                }
-                            });
-
-                    byte[] chunkBytes = chunkDataFuture.get();
+                    byte[] chunkBytes = downloadFromReplicas(loc);
                     fos.write(chunkBytes);
-                    System.out.println("Downloaded chunk " + cid);
+                    System.out.println("Downloaded chunk " + loc.getChunkId());
                 }
             }
             return downloadedFile;
         } catch (Exception e) {
             throw new RuntimeException("File download failed", e);
         }
+    }
+
+    private byte[] downloadFromReplicas(ChunkLocationResponse location) throws ExecutionException, InterruptedException {
+        List<String> candidates = new ArrayList<>();
+        candidates.add(location.getPrimaryServerAddress());
+        for (String replica : location.getReplicaServerAddressesList()) {
+            if (!candidates.contains(replica)) {
+                candidates.add(replica);
+            }
+        }
+
+        Exception lastFailure = null;
+        for (String candidate : candidates) {
+            try {
+                return downloadChunk(candidate, location.getChunkId());
+            } catch (Exception e) {
+                lastFailure = e;
+            }
+        }
+
+        throw new RuntimeException("No readable replicas for chunk " + location.getChunkId(), lastFailure);
+    }
+
+    private byte[] downloadChunk(String address, String chunkId) throws ExecutionException, InterruptedException {
+        ManagedChannel channel = channelCache.computeIfAbsent(address,
+                key -> ManagedChannelBuilder.forTarget(key).usePlaintext().build());
+
+        ChunkServiceGrpc.ChunkServiceStub chunkStub = ChunkServiceGrpc.newStub(channel);
+        CompletableFuture<byte[]> chunkDataFuture = new CompletableFuture<>();
+        ByteArrayOutputStream chunkBuffer = new ByteArrayOutputStream();
+
+        chunkStub.downloadChunk(ChunkRequest.newBuilder().setChunkId(chunkId).build(),
+                new StreamObserver<>() {
+                    @Override
+                    public void onNext(ChunkData value) {
+                        try {
+                            chunkBuffer.write(value.getData().toByteArray());
+                        } catch (IOException e) {
+                            chunkDataFuture.completeExceptionally(e);
+                        }
+                    }
+
+                    @Override
+                    public void onError(Throwable t) {
+                        chunkDataFuture.completeExceptionally(t);
+                    }
+
+                    @Override
+                    public void onCompleted() {
+                        chunkDataFuture.complete(chunkBuffer.toByteArray());
+                    }
+                });
+
+        return chunkDataFuture.get();
     }
 
     public List<String> listFiles() {
