@@ -15,6 +15,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 import com.gfs.grpc.*;
 import io.grpc.ManagedChannel;
@@ -57,8 +59,21 @@ public class FileService {
                         .filter(server -> !server.equals(primary))
                         .collect(Collectors.toList());
 
+                // Compute SHA-256 checksum for the chunk before upload
+                final String checksum;
+                try {
+                    MessageDigest md = MessageDigest.getInstance("SHA-256");
+                    byte[] digest = md.digest(chunkData);
+                    checksum = HexFormat.of().formatHex(digest);
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to compute checksum", e);
+                }
+
+                final long versionNumber = loc.getVersionNumber();
+                final long serialNumber = loc.getSerialNumber();
+
                 CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                    uploadChunk(primary, chunkId, secondaries, chunkData, index);
+                    uploadChunk(primary, chunkId, secondaries, chunkData, index, checksum, versionNumber, serialNumber);
                 }, uploadExecutor);
 
                 futures.add(future);
@@ -73,7 +88,8 @@ public class FileService {
         }
     }
 
-    private void uploadChunk(String primary, String chunkId, List<String> secondaries, byte[] data, int index) {
+    private void uploadChunk(String primary, String chunkId, List<String> secondaries, byte[] data, int index,
+                             String checksum, long versionNumber, long serialNumber) {
         ManagedChannel channel = channelCache.computeIfAbsent(primary,
                 key -> ManagedChannelBuilder.forTarget(key).usePlaintext().build());
 
@@ -83,10 +99,13 @@ public class FileService {
                         .setData(com.google.protobuf.ByteString.copyFrom(data))
                         .addAllSecondaryReplicas(secondaries)
                         .setReplicatedWrite(false)
+                        .setVersionNumber(versionNumber)
+                        .setSerialNumber(serialNumber)
+                        .setChecksum(checksum)
                         .build());
 
         if (!response.getSuccess()) {
-            throw new RuntimeException("Primary write failed for chunk " + chunkId + " at index " + index);
+            throw new RuntimeException("Primary write failed for chunk " + chunkId + " at index " + index + ": " + response.getErrorMessage());
         }
 
         System.out.println("Uploaded chunk " + chunkId + " via primary " + primary);

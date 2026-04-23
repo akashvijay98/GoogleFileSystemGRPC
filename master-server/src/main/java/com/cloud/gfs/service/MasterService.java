@@ -28,6 +28,9 @@ public class MasterService extends MasterServiceGrpc.MasterServiceImplBase {
     @Autowired
     private ServerHealthMonitor healthMonitor;
 
+    @Autowired
+    private com.cloud.gfs.service.LeaseManager leaseManager;
+
     @Override
     public void sendHeartbeat(HeartbeatRequest request, StreamObserver<HeartbeatResponse> responseObserver) {
         String address = request.getServerAddress();
@@ -61,8 +64,15 @@ public class MasterService extends MasterServiceGrpc.MasterServiceImplBase {
 
         List<String> assignedReplicas = chooseReplicas(healthyServers);
         String chunkId = UUID.randomUUID().toString();
-        String primaryServer = assignedReplicas.getFirst();
-        long leaseExpiration = System.currentTimeMillis() + LEASE_DURATION_MILLIS;
+        String primaryServer = assignedReplicas.get(0);
+
+        // Initialize version and serial numbers for new chunk
+        long initialVersion = 1L;
+        long initialSerial = 0L;
+
+        // Issue a lease for the primary
+        com.cloud.gfs.model.LeaseRecord lease = leaseManager.issueLease(chunkId, primaryServer, LEASE_DURATION_MILLIS);
+        long leaseExpiration = lease.getExpirationTime().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
 
         ChunkRecord chunk = new ChunkRecord();
         chunk.setChunkId(chunkId);
@@ -70,6 +80,8 @@ public class MasterService extends MasterServiceGrpc.MasterServiceImplBase {
         chunk.setPrimaryServerAddress(primaryServer);
         chunk.setLeaseExpirationEpochMillis(leaseExpiration);
         chunk.setReplicaServerAddresses(new ArrayList<>(assignedReplicas));
+        chunk.setVersionNumber(initialVersion);
+        chunk.setSerialNumber(initialSerial);
 
         file.getChunks().add(chunk);
         fileRepository.save(file);
@@ -79,6 +91,8 @@ public class MasterService extends MasterServiceGrpc.MasterServiceImplBase {
                 .setPrimaryServerAddress(primaryServer)
                 .addAllReplicaServerAddresses(assignedReplicas)
                 .setLeaseExpirationEpochMillis(leaseExpiration)
+                .setVersionNumber(initialVersion)
+                .setSerialNumber(initialSerial)
                 .build());
         responseObserver.onCompleted();
     }

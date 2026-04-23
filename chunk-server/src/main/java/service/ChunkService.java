@@ -17,6 +17,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -29,10 +30,10 @@ public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
     @Override
     public void writeChunk(WriteChunkRequest request, StreamObserver<WriteChunkResponse> responseObserver) {
         try {
-            persistChunk(request.getChunkId(), request.getData().toByteArray());
+            long newVersion = persistChunk(request.getChunkId(), request.getData().toByteArray(), request.getChecksum(), request.getVersionNumber());
 
             if (!request.getReplicatedWrite()) {
-                replicateToSecondaries(request);
+                replicateToSecondaries(request, newVersion);
             }
 
             responseObserver.onNext(WriteChunkResponse.newBuilder()
@@ -81,14 +82,35 @@ public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
         channelCache.values().forEach(ManagedChannel::shutdown);
     }
 
-    private void persistChunk(String chunkId, byte[] data) throws IOException {
+    private long persistChunk(String chunkId, byte[] data, String checksum, long incomingVersion) throws IOException {
         if (!Files.exists(storageDir)) {
             Files.createDirectories(storageDir);
         }
-        Files.write(storageDir.resolve(chunkId), data);
+
+        Path chunkPath = storageDir.resolve(chunkId);
+        Files.write(chunkPath, data);
+
+        // write metadata alongside chunk
+        Path metaPath = storageDir.resolve(chunkId + ".meta");
+        long version = Math.max(1L, incomingVersion);
+        if (Files.exists(metaPath)) {
+            try {
+                List<String> lines = Files.readAllLines(metaPath);
+                if (!lines.isEmpty()) {
+                    try {
+                        long existing = Long.parseLong(lines.get(0));
+                        version = Math.max(existing + 1, version);
+                    } catch (NumberFormatException ignored) {}
+                }
+            } catch (IOException ignored) {}
+        }
+
+        String metaContent = version + "\n" + checksum + "\n" + System.currentTimeMillis();
+        Files.writeString(metaPath, metaContent);
+        return version;
     }
 
-    private void replicateToSecondaries(WriteChunkRequest request) {
+    private void replicateToSecondaries(WriteChunkRequest request, long versionNumber) {
         for (String secondary : request.getSecondaryReplicasList()) {
             ManagedChannel channel = channelCache.computeIfAbsent(secondary,
                     key -> ManagedChannelBuilder.forTarget(key).usePlaintext().build());
@@ -98,6 +120,9 @@ public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
                             .setChunkId(request.getChunkId())
                             .setData(request.getData())
                             .setReplicatedWrite(true)
+                            .setVersionNumber(versionNumber)
+                            .setSerialNumber(request.getSerialNumber())
+                            .setChecksum(request.getChecksum())
                             .build());
 
             if (!response.getSuccess()) {

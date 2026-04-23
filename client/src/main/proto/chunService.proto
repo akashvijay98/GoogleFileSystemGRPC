@@ -33,6 +33,9 @@ message ChunkLocationResponse{
   string primaryServerAddress = 2;
   repeated string replicaServerAddresses = 3;
   int64 leaseExpirationEpochMillis = 4;
+  int64 versionNumber = 5;
+  int64 serialNumber = 6;
+  string checksum = 7;
 }
 
 message ChunkLocationList{
@@ -54,10 +57,14 @@ message WriteChunkRequest {
   bytes data = 2;
   repeated string secondaryReplicas = 3;
   bool replicatedWrite = 4;
+  int64 versionNumber = 5;
+  int64 serialNumber = 6;
+  string checksum = 7;
 }
 
 message WriteChunkResponse {
   bool success = 1;
+  string errorMessage = 2;
 }
 
 message FileList {
@@ -65,3 +72,4 @@ message FileList {
 }
 
 message Empty {}
+
