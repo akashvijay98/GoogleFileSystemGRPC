@@ -66,13 +66,13 @@ public class MasterService extends MasterServiceGrpc.MasterServiceImplBase {
         String chunkId = UUID.randomUUID().toString();
         String primaryServer = assignedReplicas.get(0);
 
-        // Initialize version and serial numbers for new chunk
+        // Initialize version for new chunk
         long initialVersion = 1L;
-        long initialSerial = 0L;
 
-        // Issue a lease for the primary
+        // Issue a lease for the primary (serial number is the fencing token)
         com.cloud.gfs.model.LeaseRecord lease = leaseManager.issueLease(chunkId, primaryServer, LEASE_DURATION_MILLIS);
         long leaseExpiration = lease.getExpirationTime().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+        long leaseSerial = lease.getSerialNumber();
 
         ChunkRecord chunk = new ChunkRecord();
         chunk.setChunkId(chunkId);
@@ -81,7 +81,7 @@ public class MasterService extends MasterServiceGrpc.MasterServiceImplBase {
         chunk.setLeaseExpirationEpochMillis(leaseExpiration);
         chunk.setReplicaServerAddresses(new ArrayList<>(assignedReplicas));
         chunk.setVersionNumber(initialVersion);
-        chunk.setSerialNumber(initialSerial);
+        chunk.setSerialNumber(leaseSerial);
 
         file.getChunks().add(chunk);
         fileRepository.save(file);
@@ -92,7 +92,7 @@ public class MasterService extends MasterServiceGrpc.MasterServiceImplBase {
                 .addAllReplicaServerAddresses(assignedReplicas)
                 .setLeaseExpirationEpochMillis(leaseExpiration)
                 .setVersionNumber(initialVersion)
-                .setSerialNumber(initialSerial)
+                .setSerialNumber(leaseSerial)
                 .build());
         responseObserver.onCompleted();
     }
@@ -120,6 +120,8 @@ public class MasterService extends MasterServiceGrpc.MasterServiceImplBase {
                     .setPrimaryServerAddress(record.getPrimaryServerAddress())
                     .addAllReplicaServerAddresses(record.getReplicaServerAddresses())
                     .setLeaseExpirationEpochMillis(record.getLeaseExpirationEpochMillis())
+                    .setVersionNumber(record.getVersionNumber() == null ? 1L : record.getVersionNumber())
+                    .setSerialNumber(record.getSerialNumber() == null ? 0L : record.getSerialNumber())
                     .build();
             listBuilder.addChunks(location);
         }
@@ -168,8 +170,13 @@ public class MasterService extends MasterServiceGrpc.MasterServiceImplBase {
         boolean primaryUnavailable = !healthyReplicas.contains(record.getPrimaryServerAddress());
 
         if (leaseExpired || primaryUnavailable) {
-            record.setPrimaryServerAddress(healthyReplicas.getFirst());
-            record.setLeaseExpirationEpochMillis(System.currentTimeMillis() + LEASE_DURATION_MILLIS);
+            String newPrimary = healthyReplicas.getFirst();
+            com.cloud.gfs.model.LeaseRecord lease = leaseManager.issueLease(record.getChunkId(), newPrimary, LEASE_DURATION_MILLIS);
+            long leaseExpiration = lease.getExpirationTime().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            record.setPrimaryServerAddress(newPrimary);
+            record.setLeaseExpirationEpochMillis(leaseExpiration);
+            record.setSerialNumber(lease.getSerialNumber());
         }
     }
 }

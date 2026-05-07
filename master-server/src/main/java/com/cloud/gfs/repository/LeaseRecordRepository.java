@@ -12,6 +12,8 @@ import java.util.Optional;
 public interface LeaseRecordRepository extends JpaRepository<LeaseRecord, Long> {
 	Optional<LeaseRecord> findByChunkIdAndStatus(String chunkId, LeaseRecord.LeaseStatus status);
 
+	Optional<LeaseRecord> findTopByChunkIdOrderBySerialNumberDesc(String chunkId);
+
 	@Query("SELECT l FROM LeaseRecord l WHERE l.chunkId = :chunkId AND l.status = 'ACTIVE'")
 	Optional<LeaseRecord> findActiveLeaseByChunkId(@Param("chunkId") String chunkId);
 
@@ -21,5 +23,4 @@ public interface LeaseRecordRepository extends JpaRepository<LeaseRecord, Long> 
 	@Query("SELECT l FROM LeaseRecord l WHERE l.primaryServerAddress = :serverAddress AND l.status = 'ACTIVE'")
 	List<LeaseRecord> findLeasesByPrimaryServer(@Param("serverAddress") String serverAddress);
 }
-
 

@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.LocalDateTime;
 import java.time.Duration;
+import java.util.Optional;
 
 @Service
 public class LeaseManager {
@@ -23,8 +24,13 @@ public class LeaseManager {
      */
     public LeaseRecord issueLease(String chunkId, String primaryServer, long durationMillis) {
         LocalDateTime expiration = LocalDateTime.now().plus(Duration.ofMillis(durationMillis));
-        LeaseRecord lease = new LeaseRecord(chunkId, primaryServer, 0L, expiration);
+        long nextSerial = nextLeaseSerial(chunkId);
+        LeaseRecord lease = new LeaseRecord(chunkId, primaryServer, nextSerial, expiration);
         return leaseRecordRepository.save(lease);
     }
-}
 
+    private long nextLeaseSerial(String chunkId) {
+        Optional<LeaseRecord> lastLease = leaseRecordRepository.findTopByChunkIdOrderBySerialNumberDesc(chunkId);
+        return lastLease.map(l -> l.getSerialNumber() + 1L).orElse(1L);
+    }
+}

@@ -14,9 +14,12 @@ import net.devh.boot.grpc.server.service.GrpcService;
 import javax.annotation.PreDestroy;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -30,6 +33,8 @@ public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
     @Override
     public void writeChunk(WriteChunkRequest request, StreamObserver<WriteChunkResponse> responseObserver) {
         try {
+            enforceWriteFencing(request.getChunkId(), request.getSerialNumber());
+            verifyChecksum(request.getData().toByteArray(), request.getChecksum());
             long newVersion = persistChunk(request.getChunkId(), request.getData().toByteArray(), request.getChecksum(), request.getVersionNumber());
 
             if (!request.getReplicatedWrite()) {
@@ -38,6 +43,12 @@ public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
 
             responseObserver.onNext(WriteChunkResponse.newBuilder()
                     .setSuccess(true)
+                    .build());
+            responseObserver.onCompleted();
+        } catch (IllegalStateException e) {
+            responseObserver.onNext(WriteChunkResponse.newBuilder()
+                    .setSuccess(false)
+                    .setErrorMessage(e.getMessage())
                     .build());
             responseObserver.onCompleted();
         } catch (Exception e) {
@@ -108,6 +119,59 @@ public class ChunkService extends ChunkServiceGrpc.ChunkServiceImplBase {
         String metaContent = version + "\n" + checksum + "\n" + System.currentTimeMillis();
         Files.writeString(metaPath, metaContent);
         return version;
+    }
+
+    private void enforceWriteFencing(String chunkId, long incomingSerial) throws IOException {
+        long currentSerial = readCurrentSerial(chunkId);
+        if (incomingSerial < currentSerial) {
+            throw new IllegalStateException("Stale lease fencing token for chunk " + chunkId +
+                    " (incomingSerial=" + incomingSerial + ", currentSerial=" + currentSerial + ")");
+        }
+        writeCurrentSerial(chunkId, incomingSerial);
+    }
+
+    private long readCurrentSerial(String chunkId) throws IOException {
+        if (!Files.exists(storageDir)) {
+            return 0L;
+        }
+        Path serialPath = storageDir.resolve(chunkId + ".serial");
+        if (!Files.exists(serialPath)) {
+            return 0L;
+        }
+        try {
+            String content = Files.readString(serialPath, StandardCharsets.UTF_8).trim();
+            if (content.isEmpty()) {
+                return 0L;
+            }
+            return Long.parseLong(content);
+        } catch (Exception e) {
+            return 0L;
+        }
+    }
+
+    private void writeCurrentSerial(String chunkId, long serial) throws IOException {
+        if (!Files.exists(storageDir)) {
+            Files.createDirectories(storageDir);
+        }
+        Path serialPath = storageDir.resolve(chunkId + ".serial");
+        Files.writeString(serialPath, Long.toString(serial), StandardCharsets.UTF_8);
+    }
+
+    private void verifyChecksum(byte[] data, String expectedSha256Hex) {
+        if (expectedSha256Hex == null || expectedSha256Hex.isBlank()) {
+            return;
+        }
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            String actual = HexFormat.of().formatHex(md.digest(data));
+            if (!actual.equalsIgnoreCase(expectedSha256Hex)) {
+                throw new IllegalStateException("Checksum mismatch (expected=" + expectedSha256Hex + ", actual=" + actual + ")");
+            }
+        } catch (IllegalStateException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Checksum verification failed: " + e.getMessage());
+        }
     }
 
     private void replicateToSecondaries(WriteChunkRequest request, long versionNumber) {
