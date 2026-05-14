@@ -17,6 +17,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.UUID;
 
 import com.gfs.grpc.*;
 import io.grpc.ManagedChannel;
@@ -32,6 +33,7 @@ public class FileService {
     private final MasterServiceGrpc.MasterServiceBlockingStub masterStub;
     private final ConcurrentHashMap<String, ManagedChannel> channelCache = new ConcurrentHashMap<>();
     private final ExecutorService uploadExecutor = Executors.newFixedThreadPool(8);
+    private static final long PUSH_TTL_MILLIS = 120_000;
 
     @Autowired
     public FileService(MasterServiceGrpc.MasterServiceBlockingStub masterStub) {
@@ -73,7 +75,7 @@ public class FileService {
                 final long serialNumber = loc.getSerialNumber();
 
                 CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                    uploadChunk(primary, chunkId, secondaries, chunkData, index, checksum, versionNumber, serialNumber);
+                    uploadChunkPipeline(primary, chunkId, secondaries, chunkData, index, checksum, versionNumber, serialNumber);
                 }, uploadExecutor);
 
                 futures.add(future);
@@ -88,15 +90,31 @@ public class FileService {
         }
     }
 
-    private void uploadChunk(String primary, String chunkId, List<String> secondaries, byte[] data, int index,
-                             String checksum, long versionNumber, long serialNumber) {
-        ManagedChannel channel = channelCache.computeIfAbsent(primary,
+    private void uploadChunkPipeline(String primary, String chunkId, List<String> secondaries, byte[] data, int index,
+                                     String checksum, long versionNumber, long serialNumber) {
+        String dataId = UUID.randomUUID().toString();
+
+        // 1) Push data to primary and pipeline to secondaries.
+        ManagedChannel primaryChannel = channelCache.computeIfAbsent(primary,
                 key -> ManagedChannelBuilder.forTarget(key).usePlaintext().build());
 
-        WriteChunkResponse response = ChunkServiceGrpc.newBlockingStub(channel)
-                .writeChunk(WriteChunkRequest.newBuilder()
-                        .setChunkId(chunkId)
+        PushChunkDataResponse pushResp = ChunkServiceGrpc.newBlockingStub(primaryChannel)
+                .pushChunkData(PushChunkDataRequest.newBuilder()
+                        .setDataId(dataId)
                         .setData(com.google.protobuf.ByteString.copyFrom(data))
+                        .setChecksum(checksum)
+                        .setTtlMillis(PUSH_TTL_MILLIS)
+                        .addAllForwardChain(secondaries)
+                        .build());
+        if (!pushResp.getSuccess()) {
+            throw new RuntimeException("Push failed for chunk " + chunkId + " at index " + index + ": " + pushResp.getErrorMessage());
+        }
+
+        // 2) Send small mutation command to primary; primary forwards to secondaries.
+        WriteChunkResponse writeResp = ChunkServiceGrpc.newBlockingStub(primaryChannel)
+                .writeChunkFromDataId(WriteChunkFromDataIdRequest.newBuilder()
+                        .setChunkId(chunkId)
+                        .setDataId(dataId)
                         .addAllSecondaryReplicas(secondaries)
                         .setReplicatedWrite(false)
                         .setVersionNumber(versionNumber)
@@ -104,8 +122,8 @@ public class FileService {
                         .setChecksum(checksum)
                         .build());
 
-        if (!response.getSuccess()) {
-            throw new RuntimeException("Primary write failed for chunk " + chunkId + " at index " + index + ": " + response.getErrorMessage());
+        if (!writeResp.getSuccess()) {
+            throw new RuntimeException("Primary write failed for chunk " + chunkId + " at index " + index + ": " + writeResp.getErrorMessage());
         }
 
         System.out.println("Uploaded chunk " + chunkId + " via primary " + primary);

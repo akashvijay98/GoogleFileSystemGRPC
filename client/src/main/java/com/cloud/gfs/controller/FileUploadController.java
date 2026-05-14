@@ -16,6 +16,9 @@ import java.util.List;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 
 @RestController
 public class FileUploadController {
@@ -33,8 +36,8 @@ public class FileUploadController {
         }
 
         File convFile = new File(System.getProperty("java.io.tmpdir") + "/" + file.getOriginalFilename());
-        try (FileOutputStream fos = new FileOutputStream(convFile)) {
-            fos.write(file.getBytes());
+        try (InputStream in = file.getInputStream()) {
+            Files.copy(in, convFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             e.printStackTrace();
             return "Failed to convert file";

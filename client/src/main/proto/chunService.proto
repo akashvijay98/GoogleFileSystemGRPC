@@ -13,6 +13,10 @@ service MasterService{
 
 service ChunkService {
   rpc WriteChunk(WriteChunkRequest) returns (WriteChunkResponse);
+  // GFS-style data push: client pushes data to replicas (optionally pipelined),
+  // then sends a small mutation command to the primary referencing the pushed data.
+  rpc PushChunkData(PushChunkDataRequest) returns (PushChunkDataResponse);
+  rpc WriteChunkFromDataId(WriteChunkFromDataIdRequest) returns (WriteChunkResponse);
   rpc DownloadChunk(ChunkRequest) returns (stream ChunkData);
 }
 
@@ -67,9 +71,32 @@ message WriteChunkResponse {
   string errorMessage = 2;
 }
 
+message PushChunkDataRequest {
+  string dataId = 1;
+  bytes data = 2;
+  string checksum = 3;
+  int64 ttlMillis = 4;
+  // Optional: next replicas in the pipeline; receiver forwards to the first, etc.
+  repeated string forwardChain = 5;
+}
+
+message PushChunkDataResponse {
+  bool success = 1;
+  string errorMessage = 2;
+}
+
+message WriteChunkFromDataIdRequest {
+  string chunkId = 1;
+  string dataId = 2;
+  repeated string secondaryReplicas = 3;
+  bool replicatedWrite = 4;
+  int64 versionNumber = 5;
+  int64 serialNumber = 6;
+  string checksum = 7;
+}
+
 message FileList {
   repeated string fileNames = 1;
 }
 
 message Empty {}
-
