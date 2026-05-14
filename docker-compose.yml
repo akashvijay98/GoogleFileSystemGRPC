@@ -98,3 +98,12 @@ services:
     depends_on:
       - prometheus
 
+  loadtest:
+    build:
+      context: .
+      dockerfile: loadtest/Dockerfile
+    container_name: loadtest
+    ports:
+      - "8000:8000"
+    depends_on:
+      - client

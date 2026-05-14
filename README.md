@@ -194,3 +194,42 @@ curl http://localhost:8081/actuator/prometheus
 - Ensure at least one chunk server is running
 - Check chunk server health
 - Verify file permissions
+
+## Load Testing (Max Throughput)
+
+This repo includes a small load test harness: `load_test.py`. It targets the Client REST API (`:8080`) and reports:
+- `ok_rps` (successful requests/sec)
+- `mbps_out` / `mbps_in` (MiB/sec)
+- `p50` / `p95` / `p99` latency
+
+Note: `/upload` always returns HTTP 200 even when the upload fails; the load test treats any non-success response body as a failure.
+
+### Upload throughput
+```bash
+python3 load_test.py upload --base-url http://localhost:8080 --duration 30 --concurrency 50 --file-size-mb 1 --unique-names
+```
+
+### Download throughput
+This seeds the file(s) first, then repeatedly downloads:
+```bash
+python3 load_test.py download --base-url http://localhost:8080 --duration 30 --concurrency 100 --file-size-mb 8 --file-name loadtest.bin --download-pool 3
+```
+
+### Find max stable throughput (concurrency sweep)
+Stops when `error_rate` exceeds 1% or `p95` exceeds 2000ms (tunable):
+```bash
+python3 load_test.py sweep upload --base-url http://localhost:8080 --duration 20 --file-size-mb 1 --unique-names --concurrency-list 1,2,4,8,16,32,64,128
+python3 load_test.py sweep download --base-url http://localhost:8080 --duration 20 --file-size-mb 8 --download-pool 3 --concurrency-list 1,2,4,8,16,32,64,128,256
+```
+
+### Notes
+- For more realistic results, run the load generator on a different machine/container than the GFS services.
+- If `ok_rps` keeps rising but `p95` explodes, you are past the system’s comfortable throughput; use the highest `ok_rps` that still meets your latency/error SLO.
+- Prefer `--unique-names` for upload sweeps to avoid testing overwrite behavior.
+
+### Prometheus metrics for the load generator
+`load_test.py` can expose Prometheus metrics (requests/latency/bytes) while a test is running:
+```bash
+python3 load_test.py upload --base-url http://localhost:8080 --duration 60 --concurrency 50 --file-size-mb 1 --unique-names --prom-port 8000
+```
+In Docker Compose, `prometheus.yml` also scrapes the `loadtest` service at `/metrics`, so Prometheus shows load-generator + server-side metrics together.

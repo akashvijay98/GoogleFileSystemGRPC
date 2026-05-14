@@ -16,3 +16,8 @@ scrape_configs:
     metrics_path: '/actuator/prometheus'
     static_configs:
       - targets: ['chunk-server-1:8080', 'chunk-server-2:8080', 'chunk-server-3:8080']
+
+  - job_name: 'loadtest'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['loadtest:8000']
